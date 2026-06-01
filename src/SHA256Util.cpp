@@ -1,9 +1,9 @@
 #include "../include/SHA256Util.hpp"
+
 #include <openssl/evp.h>
 #include <fstream>
 #include <sstream>
 #include <iomanip>
-#include <vector>
 
 static std::string to_hex(const unsigned char* hash, unsigned int length) {
     std::ostringstream oss;
@@ -38,18 +38,20 @@ std::string sha256_file(const std::string& filepath) {
     EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
 
     char buffer[65536];
+
     while (file.good()) {
         file.read(buffer, sizeof(buffer));
-        std::streamsize bytes = file.gcount();
-        if (bytes > 0) {
-            EVP_DigestUpdate(ctx, buffer, static_cast<size_t>(bytes));
+        std::streamsize n = file.gcount();
+        if (n > 0) {
+            EVP_DigestUpdate(ctx, buffer, static_cast<size_t>(n));
         }
     }
 
     unsigned char hash[EVP_MAX_MD_SIZE];
     unsigned int length = 0;
-    EVP_DigestFinal_ex(ctx, hash, &length);
 
+    EVP_DigestFinal_ex(ctx, hash, &length);
     EVP_MD_CTX_free(ctx);
+
     return to_hex(hash, length);
 }

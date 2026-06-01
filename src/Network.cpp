@@ -1,6 +1,6 @@
 #include "../include/Network.hpp"
+
 #include <iostream>
-#include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -8,7 +8,7 @@
 int init_server_socket(int port) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        std::cerr << "[-] Cannot create server socket\n";
+        std::cerr << "[-] Cannot create socket\n";
         return -1;
     }
 
@@ -57,26 +57,26 @@ int connect_to_server(const char* ip, int port) {
 }
 
 bool send_all(int sock, const void* data, size_t size) {
-    const char* buffer = static_cast<const char*>(data);
-    size_t total = 0;
+    const char* p = static_cast<const char*>(data);
+    size_t sent_total = 0;
 
-    while (total < size) {
-        ssize_t sent = send(sock, buffer + total, size - total, 0);
+    while (sent_total < size) {
+        ssize_t sent = send(sock, p + sent_total, size - sent_total, 0);
         if (sent <= 0) return false;
-        total += sent;
+        sent_total += sent;
     }
 
     return true;
 }
 
 bool recv_all(int sock, void* data, size_t size) {
-    char* buffer = static_cast<char*>(data);
-    size_t total = 0;
+    char* p = static_cast<char*>(data);
+    size_t recv_total = 0;
 
-    while (total < size) {
-        ssize_t received = recv(sock, buffer + total, size - total, 0);
-        if (received <= 0) return false;
-        total += received;
+    while (recv_total < size) {
+        ssize_t n = recv(sock, p + recv_total, size - recv_total, 0);
+        if (n <= 0) return false;
+        recv_total += n;
     }
 
     return true;
