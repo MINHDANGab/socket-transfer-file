@@ -53,10 +53,6 @@ static void save_state(const std::string& state_path, const std::vector<unsigned
     out.write(reinterpret_cast<const char*>(bitmap.data()), static_cast<std::streamsize>(bitmap.size()));
 }
 
-static uint64_t count_received_chunks(const std::vector<unsigned char>& bitmap) {
-    return static_cast<uint64_t>(std::count(bitmap.begin(), bitmap.end(), 1));
-}
-
 static bool all_chunks_received(const std::vector<unsigned char>& bitmap) {
     return std::all_of(bitmap.begin(), bitmap.end(), [](unsigned char x) {
         return x == 1;
@@ -112,6 +108,12 @@ void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
             return;
         }
     }
+
+    std::cout << filename
+              << " | size: " << file_size << " bytes"
+              << " | chunks: " << total_chunks
+              << " | need send: " << missing_count
+              << "\n";
 
     std::shuffle(
         missing_chunks.begin(),
@@ -190,12 +192,11 @@ void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
     }
 }
 
-void receiveFileRandomChunkShaResume(int client_socket) {
+bool receiveFileRandomChunkShaResume(int client_socket) {
     FileHeader header{};
 
     if (!recv_all(client_socket, &header, sizeof(header))) {
-        std::cerr << "[-] Client disconnected before FileHeader\n";
-        return;
+        return false;
     }
 
     std::string filename(header.filename);
@@ -231,22 +232,19 @@ void receiveFileRandomChunkShaResume(int client_socket) {
     uint64_t missing_count = static_cast<uint64_t>(missing_chunks.size());
 
     if (!send_all(client_socket, &missing_count, sizeof(missing_count))) {
-        std::cerr << "[-] Failed to send missing chunk count\n";
-        return;
+        return false;
     }
 
     if (missing_count > 0) {
         if (!send_all(client_socket, missing_chunks.data(), missing_count * sizeof(uint64_t))) {
-            std::cerr << "[-] Failed to send missing chunk list\n";
-            return;
+            return false;
         }
     }
 
     std::fstream outfile(data_path, std::ios::binary | std::ios::in | std::ios::out);
 
     if (!outfile.is_open()) {
-        std::cerr << "[-] Cannot open output file\n";
-        return;
+        return false;
     }
 
     std::vector<char> buffer(BUFFER_SIZE);
@@ -257,21 +255,21 @@ void receiveFileRandomChunkShaResume(int client_socket) {
         if (!recv_all(client_socket, &chunk_header, sizeof(chunk_header))) {
             save_state(state_path, bitmap);
             outfile.close();
-            return;
+            return false;
         }
 
         if (chunk_header.chunk_index >= header.total_chunks) {
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
-            return;
+            return false;
         }
 
         if (chunk_header.data_size > BUFFER_SIZE) {
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
-            return;
+            return false;
         }
 
         uint64_t expected_offset = chunk_header.chunk_index * header.chunk_size;
@@ -280,13 +278,13 @@ void receiveFileRandomChunkShaResume(int client_socket) {
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
-            return;
+            return false;
         }
 
         if (!recv_all(client_socket, buffer.data(), chunk_header.data_size)) {
             save_state(state_path, bitmap);
             outfile.close();
-            return;
+            return false;
         }
 
         std::string actual_chunk_hash =
@@ -298,7 +296,7 @@ void receiveFileRandomChunkShaResume(int client_socket) {
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
-            return;
+            return false;
         }
 
         if (bitmap[chunk_header.chunk_index] == 0) {
@@ -323,7 +321,10 @@ void receiveFileRandomChunkShaResume(int client_socket) {
         if (fs::exists(state_path)) {
             fs::remove(state_path);
         }
-    } else {
-        send_all(client_socket, "ER", 2);
+
+        return true;
     }
+
+    send_all(client_socket, "ER", 2);
+    return false;
 }
