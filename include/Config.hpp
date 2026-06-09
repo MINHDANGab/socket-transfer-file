@@ -5,4 +5,4 @@
 #define BUFFER_SIZE 65536   // 64KB
 
 // Bật/tắt log chi tiết từng chunk
-#define VERBOSE_CHUNK_LOG 1
+#define VERBOSE_CHUNK_LOG 0
