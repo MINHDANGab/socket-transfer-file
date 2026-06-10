@@ -1,56 +1,41 @@
-# TCP File Transfer with SHA256, Random Chunks, Resume and Multi-file over One TCP Connection
+# TCP File Transfer with SHA256, Resume and Multi-file over Single TCP Connection
 
-## Giới thiệu
+## 1. Giới thiệu
 
-Project xây dựng hệ thống truyền file giữa Client và Server sử dụng TCP Socket bằng C++.
+Đây là project xây dựng hệ thống truyền file giữa Client và Server sử dụng giao thức TCP bằng ngôn ngữ C++.
 
-### Tính năng
+Hệ thống hỗ trợ truyền nhiều file trong một phiên kết nối, kiểm tra tính toàn vẹn dữ liệu bằng SHA256, khôi phục truyền file khi mất kết nối (Resume) và tối ưu băng thông bằng cách chỉ gửi lại các chunk còn thiếu.
 
-* Gửi nhiều file trong một lần chạy Client
-* Chỉ sử dụng 1 TCP connection duy nhất
-* Truyền file theo cơ chế chunk
-* Chunk được gửi theo thứ tự ngẫu nhiên
-* Kiểm tra SHA256 cho từng chunk
-* Kiểm tra SHA256 cho toàn bộ file
-* Resume khi mất kết nối
-* Chỉ gửi lại các chunk còn thiếu
-* Lưu trạng thái nhận bằng file `.state`
+Khác với phiên bản truyền file truyền thống, Client chỉ mở một kết nối TCP duy nhất và sử dụng kết nối đó để truyền tuần tự nhiều file tới Server.
 
 ---
 
-## Công nghệ sử dụng
+## 2. Tính năng chính
+
+* Truyền nhiều file trong một phiên làm việc.
+* Chỉ sử dụng một TCP connection duy nhất.
+* Chia file thành nhiều chunk.
+* Gửi chunk theo thứ tự ngẫu nhiên.
+* Hỗ trợ Resume khi mất kết nối.
+* Chỉ gửi lại các chunk còn thiếu.
+* Kiểm tra SHA256 cho toàn bộ file.
+* Hỗ trợ truyền file dung lượng lớn.
+* Tự động lưu trạng thái truyền bằng file `.state`.
+* Hỗ trợ truyền nhiều file liên tiếp trên cùng một socket.
+
+---
+
+## 3. Công nghệ sử dụng
 
 * C++17
-* TCP Socket
+* TCP Socket Programming
 * OpenSSL SHA256
 * CMake
 * Linux / Ubuntu
 
 ---
 
-## Kiến trúc hệ thống
-
-```text
-Client
-│
-├── client.cpp
-├── Network.cpp
-├── Transfer.cpp
-└── SHA256Util.cpp
-
-        TCP
-
-Server
-│
-├── server.cpp
-├── Network.cpp
-├── Transfer.cpp
-└── SHA256Util.cpp
-```
-
----
-
-## Cấu trúc project
+## 4. Cấu trúc thư mục
 
 ```text
 socket_sha256_resume_random_chunks_verbose/
@@ -58,6 +43,9 @@ socket_sha256_resume_random_chunks_verbose/
 ├── build.sh
 ├── CMakeLists.txt
 ├── README.md
+│
+├── data/
+│   └── các file test
 │
 ├── include/
 │   ├── Config.hpp
@@ -75,55 +63,77 @@ socket_sha256_resume_random_chunks_verbose/
 │
 └── build/
     ├── client
-    └── server
+    ├── server
+    └── data/
 ```
 
 ---
 
-## Mô hình truyền dữ liệu
+## 5. Kiến trúc hệ thống
 
-Project hiện tại sử dụng:
+```text
++------------------+
+|      Client      |
++------------------+
+| client.cpp       |
+| Transfer.cpp     |
+| Network.cpp      |
+| SHA256Util.cpp   |
++------------------+
+         |
+         | TCP
+         |
++------------------+
+|      Server      |
++------------------+
+| server.cpp       |
+| Transfer.cpp     |
+| Network.cpp      |
+| SHA256Util.cpp   |
++------------------+
+```
+
+---
+
+## 6. Mô hình kết nối
+
+Project sử dụng:
 
 ```text
 1 TCP Connection
 N File
 ```
 
-Client chỉ kết nối một lần.
+Client chỉ kết nối tới Server một lần.
+
+Ví dụ:
 
 ```text
-Client                                   Server
-  |                                         |
-  |------ TCP Connect --------------------->|
-  |                                         |
-  |------ FileHeader(file1) --------------->|
-  |<----- MissingInfo(file1) ---------------|
-  |------ ChunkHeader + ChunkData --------->|
-  |<----- ACK OK / ER ----------------------|
-  |------ ChunkHeader + ChunkData --------->|
-  |<----- ACK OK / ER ----------------------|
-  |<----- FinalResult(file1) ---------------|
-  |                                         |
-  |------ FileHeader(file2) --------------->|
-  |<----- MissingInfo(file2) ---------------|
-  |------ ChunkHeader + ChunkData --------->|
-  |<----- ACK OK / ER ----------------------|
-  |<----- FinalResult(file2) ---------------|
-  |                                         |
-  |------ FileHeader(fileN) --------------->|
-  |<----- MissingInfo(fileN) ---------------|
-  |------ ChunkHeader + ChunkData --------->|
-  |<----- ACK OK / ER ----------------------|
-  |<----- FinalResult(fileN) ---------------|
-  |                                         |
-  |------ Close Connection ---------------->|
+Client
+|
+|---- File 1 ----|
+|---- File 2 ----|
+|---- File 3 ----|
+|
+Close Connection
 ```
+
+Server nhận lần lượt các file trên cùng một socket.
+
+Ưu điểm:
+
+* Giảm chi phí TCP Handshake.
+* Tăng hiệu năng truyền.
+* Không cần mở và đóng kết nối liên tục.
+* Dễ mở rộng cho số lượng file lớn.
 
 ---
 
-## FileHeader
+## 7. Cấu trúc gói tin
 
-Metadata của file được gửi trước khi truyền dữ liệu.
+### FileHeader
+
+Metadata của file.
 
 ```cpp
 struct FileHeader
@@ -136,11 +146,21 @@ struct FileHeader
 };
 ```
 
+Ý nghĩa:
+
+| Trường       | Mô tả                   |
+| ------------ | ----------------------- |
+| filename     | Tên file                |
+| file_size    | Kích thước file         |
+| chunk_size   | Kích thước mỗi chunk    |
+| total_chunks | Tổng số chunk           |
+| file_sha256  | SHA256 của toàn bộ file |
+
 ---
 
-## ChunkHeader
+### ChunkHeader
 
-Metadata của từng chunk.
+Metadata của chunk.
 
 ```cpp
 struct ChunkHeader
@@ -152,29 +172,108 @@ struct ChunkHeader
 };
 ```
 
+Ý nghĩa:
+
+| Trường       | Mô tả                 |
+| ------------ | --------------------- |
+| chunk_index  | Số thứ tự chunk       |
+| offset       | Vị trí ghi trong file |
+| data_size    | Kích thước dữ liệu    |
+| chunk_sha256 | SHA256 của chunk      |
+
 ---
 
-## Quy trình Resume
+## 8. Quy trình truyền file
 
-### Lần gửi đầu
+### Bước 1
+
+Client gửi FileHeader.
 
 ```text
-Client gửi FileHeader
-        ↓
-Server tạo file nhận
-        ↓
-Server gửi missing chunk list
-        ↓
-Client gửi chunk
-        ↓
-Server lưu bitmap
-        ↓
-Server kiểm tra SHA256
+Client
+    |
+    |---- FileHeader ---->
+    |
+Server
 ```
 
-### Mất kết nối
+---
 
-Server lưu:
+### Bước 2
+
+Server kiểm tra trạng thái file.
+
+Nếu đã từng nhận trước đó:
+
+```text
+received_filename
+received_filename.state
+```
+
+Server xác định các chunk còn thiếu.
+
+---
+
+### Bước 3
+
+Server gửi danh sách chunk còn thiếu.
+
+```text
+MissingCount
+MissingChunkList
+```
+
+---
+
+### Bước 4
+
+Client chỉ gửi các chunk còn thiếu.
+
+```text
+ChunkHeader
+ChunkData
+```
+
+---
+
+### Bước 5
+
+Server ghi dữ liệu vào đúng vị trí.
+
+```cpp
+outfile.seekp(offset);
+outfile.write(...);
+```
+
+---
+
+### Bước 6
+
+Sau khi nhận đủ chunk, Server tính SHA256 toàn file.
+
+```text
+SHA256(received_file)
+==
+SHA256(original_file)
+```
+
+Nếu đúng:
+
+```text
+OK
+```
+
+Nếu sai:
+
+```text
+ER
+```
+
+---
+
+## 9. Cơ chế Resume
+
+Mỗi file sẽ có:
 
 ```text
 received_filename
@@ -190,13 +289,11 @@ Ví dụ:
 Trong đó:
 
 ```text
-1 = đã nhận
-0 = chưa nhận
+1 = Đã nhận
+0 = Chưa nhận
 ```
 
----
-
-## Resume lần tiếp theo
+Khi Client gửi lại cùng file:
 
 ```text
 Client gửi FileHeader
@@ -205,54 +302,29 @@ Server đọc file .state
         ↓
 Server xác định chunk còn thiếu
         ↓
-Server gửi missing chunk list
+Server gửi MissingChunkList
         ↓
-Client chỉ gửi các chunk còn thiếu
+Client chỉ gửi lại các chunk còn thiếu
 ```
+
+Nhờ đó không cần truyền lại toàn bộ file.
 
 ---
 
-## Kiểm tra lỗi
+## 10. Vai trò của SHA256
 
-### SHA256 từng chunk
+TCP đã đảm bảo dữ liệu được truyền chính xác trên đường mạng.
 
-Client:
+Tuy nhiên hệ thống vẫn sử dụng SHA256 để kiểm tra tính toàn vẹn dữ liệu ở tầng ứng dụng.
 
-```text
-ChunkData
-↓
-SHA256(chunk)
-↓
-ChunkHeader
-```
+SHA256 giúp:
 
-Server:
+* Kiểm tra file sau khi Resume.
+* Phát hiện lỗi khi ghép lại các chunk.
+* Phát hiện lỗi ghi file.
+* Đảm bảo file cuối cùng giống hoàn toàn file gốc.
 
-```text
-Nhận Chunk
-↓
-Tính SHA256
-↓
-So sánh
-```
-
-Nếu đúng:
-
-```text
-ACK = OK
-```
-
-Nếu sai:
-
-```text
-ACK = ER
-```
-
----
-
-### SHA256 toàn file
-
-Sau khi nhận đủ chunk:
+Ví dụ:
 
 ```text
 SHA256(received_file)
@@ -260,63 +332,83 @@ SHA256(received_file)
 SHA256(original_file)
 ```
 
-Nếu đúng:
+Nếu khác nhau:
 
 ```text
-FinalResult = OK
+File lỗi
 ```
 
-Nếu sai:
+Nếu giống nhau:
 
 ```text
-FinalResult = ER
+File hợp lệ
 ```
 
 ---
 
-## Build
+## 11. Build Project
 
-Cài đặt thư viện:
+### Cài đặt thư viện
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential cmake libssl-dev
 ```
 
-Build:
+### Cấp quyền thực thi
+
+```bash
+chmod +x build.sh
+```
+
+### Build
 
 ```bash
 ./build.sh
 ```
 
-hoặc:
+Script sẽ thực hiện:
 
 ```bash
-mkdir build
+rm -rf build
+mkdir -p build
 cd build
 
 cmake ..
-cmake --build . -j$(nproc)
+cmake --build .
+
+cp -r ../data .
+```
+
+Sau khi build:
+
+```text
+build/
+├── client
+├── server
+└── data/
 ```
 
 ---
 
-## Chạy chương trình
+## 12. Chạy chương trình
 
-### Server
+### Chạy Server
 
 ```bash
 cd build
 ./server
 ```
 
-Output:
+Kết quả:
 
 ```text
 [*] Server listening on port 54321...
 ```
 
-### Client
+---
+
+### Chạy Client
 
 ```bash
 cd build
@@ -327,10 +419,10 @@ Nhập thư mục:
 
 ```text
 Enter folder path:
-/home/user/test_files
+/home/user/data
 ```
 
-Chọn file:
+Ví dụ chọn:
 
 ```text
 1
@@ -350,7 +442,9 @@ all
 
 ---
 
-## Ví dụ output
+## 13. Ví dụ đầu ra
+
+### Client
 
 ```text
 ========== SEND QUEUE ==========
@@ -367,40 +461,81 @@ test_100mb.bin | size: 104857600 bytes | chunks: 1600 | need send: 1600
 
 test_1gb.bin | size: 1073741824 bytes | chunks: 16384 | need send: 8977
 [OK] test_1gb.bin
+
+[+] Done
 ```
 
----
-
-## Ưu điểm
-
-* Chỉ dùng 1 TCP connection
-* Hỗ trợ Resume
-* Hỗ trợ truyền file lớn
-* Kiểm tra toàn vẹn dữ liệu
-* Chỉ gửi phần còn thiếu
-* Tiết kiệm băng thông khi truyền lại
-* Hỗ trợ nhiều file trong một phiên truyền
-
----
-
-## Hướng phát triển
-
-* Retry khi ACK = ER
-* AES Encryption
-* Multi-thread Server
-* Nén dữ liệu trước khi gửi
-* GUI Client
-* Thanh tiến trình truyền file
-* Hỗ trợ truyền thư mục đệ quy
-
----
-
-## Kết luận
-
-Project hiện thực cơ chế truyền file tin cậy dựa trên:
+### Server
 
 ```text
-TCP + SHA256 + Resume + Random Chunks + Multi-file + Single Connection
+[*] Server listening on port 54321...
+
+[+] Client connected
+
+[OK] Received successfully: CMakeLists.txt
+
+[OK] Received successfully: test_100mb.bin
+
+[OK] Received successfully: test_1gb.bin
+
+[*] Client disconnected
 ```
 
-Client chỉ mở một kết nối TCP duy nhất, truyền nhiều file tuần tự, hỗ trợ resume và kiểm tra toàn vẹn dữ liệu ở cả mức chunk và mức file.
+---
+
+## 14. Tạo file test
+
+Tạo file 100MB:
+
+```bash
+dd if=/dev/zero of=test_100mb.bin bs=1M count=100 status=progress
+```
+
+Tạo file 1GB:
+
+```bash
+dd if=/dev/zero of=test_1gb.bin bs=1M count=1024 status=progress
+```
+
+Kiểm tra:
+
+```bash
+ls -lh
+```
+
+---
+
+## 15. Ưu điểm
+
+* Một TCP connection cho nhiều file.
+* Resume khi mất kết nối.
+* Chỉ gửi phần dữ liệu còn thiếu.
+* Tiết kiệm băng thông.
+* Hỗ trợ file dung lượng lớn.
+* Kiểm tra toàn vẹn dữ liệu bằng SHA256.
+* Dễ mở rộng và bảo trì.
+
+---
+
+## 16. Hướng phát triển
+
+* Retry khi ACK = ER.
+* Mã hóa AES.
+* Multi-thread Server.
+* Nén dữ liệu trước khi truyền.
+* Thanh tiến trình truyền file.
+* GUI Client.
+* Truyền thư mục đệ quy.
+* Xác thực Client/Server.
+
+---
+
+## 17. Kết luận
+
+Project hiện thực hệ thống truyền file dựa trên:
+
+```text
+TCP + Resume + SHA256 + Multi-file + Single Connection
+```
+
+Hệ thống cho phép truyền nhiều file trong một phiên kết nối, hỗ trợ Resume khi mất kết nối và đảm bảo tính toàn vẹn dữ liệu thông qua SHA256.
