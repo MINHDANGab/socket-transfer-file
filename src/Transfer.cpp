@@ -316,15 +316,31 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
     std::string actual_file_hash = sha256_file(data_path);
 
     if (actual_file_hash == expected_file_hash) {
-        send_all(client_socket, "OK", 2);
+    send_all(client_socket, "OK", 2);
 
-        if (fs::exists(state_path)) {
-            fs::remove(state_path);
-        }
+    if (fs::exists(state_path)) {
+        fs::remove(state_path);
+    }
 
-        return true;
+    std::cout
+        << "[OK] Received successfully: "
+        << filename
+        << " ("
+        << header.file_size
+        << " bytes, "
+        << header.total_chunks
+        << " chunks)"
+        << std::endl;
+
+    return true;
     }
 
     send_all(client_socket, "ER", 2);
+
+    std::cout
+    << "[FAILED] SHA256 mismatch: "
+    << filename
+    << std::endl;
+
     return false;
 }
