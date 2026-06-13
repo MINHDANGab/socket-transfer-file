@@ -59,6 +59,14 @@ static bool all_chunks_received(const std::vector<unsigned char>& bitmap) {
     });
 }
 
+static uint64_t count_received_chunks(const std::vector<unsigned char>& bitmap) {
+    return static_cast<uint64_t>(
+        std::count_if(bitmap.begin(), bitmap.end(), [](unsigned char x) {
+            return x == 1;
+        })
+    );
+}
+
 static void ensure_output_file_size(const std::string& data_path, uint64_t file_size) {
     if (!fs::exists(data_path)) {
         std::ofstream create(data_path, std::ios::binary);
@@ -66,6 +74,68 @@ static void ensure_output_file_size(const std::string& data_path, uint64_t file_
     }
 
     fs::resize_file(data_path, file_size);
+}
+
+static void print_progress(
+    const std::string& filename,
+    uint64_t done,
+    uint64_t total
+) {
+    const int bar_width = 40;
+
+    double percent = 1.0;
+
+    if (total > 0) {
+        percent = static_cast<double>(done) / static_cast<double>(total);
+    }
+
+    if (percent > 1.0) {
+        percent = 1.0;
+    }
+
+    int filled = static_cast<int>(percent * bar_width);
+
+    std::cout << "\r[PROGRESS] " << filename << " [";
+
+    for (int i = 0; i < bar_width; ++i) {
+        if (i < filled) {
+            std::cout << "=";
+        } else if (i == filled && done < total) {
+            std::cout << ">";
+        } else {
+            std::cout << " ";
+        }
+    }
+
+    std::cout << "] "
+              << done << "/" << total
+              << " chunks "
+              << static_cast<int>(percent * 100) << "%"
+              << std::flush;
+}
+
+/*
+    Đọc lại đúng vùng dữ liệu vừa ghi xuống file,
+    sau đó tính SHA-256 để kiểm tra server đã ghi đúng offset chưa.
+*/
+static std::string sha256_file_range(
+    std::fstream& file,
+    uint64_t offset,
+    uint32_t size
+) {
+    std::vector<char> verify_buffer(size);
+
+    file.flush();
+    file.clear();
+
+    file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    file.read(verify_buffer.data(), size);
+
+    if (static_cast<uint32_t>(file.gcount()) != size) {
+        return "";
+    }
+
+    return sha256_buffer(verify_buffer.data(), size);
 }
 
 void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
@@ -115,6 +185,10 @@ void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
               << " | need send: " << missing_count
               << "\n";
 
+    /*
+        Gửi chunk theo thứ tự ngẫu nhiên.
+        Server vẫn ghép đúng vì ghi theo offset.
+    */
     std::shuffle(
         missing_chunks.begin(),
         missing_chunks.end(),
@@ -130,6 +204,9 @@ void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
 
     std::vector<char> buffer(BUFFER_SIZE);
 
+    uint64_t sent_progress = total_chunks - missing_count;
+    print_progress(filename, sent_progress, total_chunks);
+
     for (uint64_t chunk_index : missing_chunks) {
         uint64_t offset = chunk_index * chunk_size;
         uint64_t remain = file_size - offset;
@@ -141,7 +218,7 @@ void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
         uint32_t actual_read = static_cast<uint32_t>(infile.gcount());
 
         if (actual_read != data_size) {
-            std::cerr << "[-] Read file error at chunk " << chunk_index << "\n";
+            std::cerr << "\n[-] Read file error at chunk " << chunk_index << "\n";
             return;
         }
 
@@ -151,32 +228,41 @@ void sendFileRandomChunkShaResume(int sock, const std::string& filepath) {
         chunk_header.chunk_index = chunk_index;
         chunk_header.offset = offset;
         chunk_header.data_size = actual_read;
-        std::strncpy(chunk_header.chunk_sha256, chunk_hash.c_str(), sizeof(chunk_header.chunk_sha256) - 1);
+        std::strncpy(
+            chunk_header.chunk_sha256,
+            chunk_hash.c_str(),
+            sizeof(chunk_header.chunk_sha256) - 1
+        );
 
         if (!send_all(sock, &chunk_header, sizeof(chunk_header))) {
-            std::cerr << "[-] Connection lost while sending ChunkHeader\n";
+            std::cerr << "\n[-] Connection lost while sending ChunkHeader\n";
             return;
         }
 
         if (!send_all(sock, buffer.data(), actual_read)) {
-            std::cerr << "[-] Connection lost while sending ChunkData\n";
+            std::cerr << "\n[-] Connection lost while sending ChunkData\n";
             return;
         }
 
         char ack[3] = {0};
 
         if (!recv_all(sock, ack, 2)) {
-            std::cerr << "[-] Connection lost while waiting ACK\n";
+            std::cerr << "\n[-] Connection lost while waiting ACK\n";
             return;
         }
 
         if (std::string(ack, 2) == "ER") {
-            std::cerr << "[-] Server rejected chunk " << chunk_index << "\n";
+            std::cerr << "\n[-] Server rejected chunk " << chunk_index << "\n";
             return;
         }
 
+        sent_progress++;
+        print_progress(filename, sent_progress, total_chunks);
+
         usleep(20000);
     }
+
+    std::cout << "\n";
 
     char final_response[3] = {0};
 
@@ -201,9 +287,14 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
 
     std::string filename(header.filename);
     std::string expected_file_hash(header.file_sha256);
+
     std::string data_path = data_path_of(filename);
     std::string state_path = state_path_of(filename);
 
+    /*
+        Nếu file cũ tồn tại nhưng kích thước khác file mới,
+        server xóa file cũ và state cũ để nhận lại từ đầu.
+    */
     if (fs::exists(data_path) && fs::file_size(data_path) != header.file_size) {
         fs::remove(data_path);
 
@@ -212,6 +303,10 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
         }
     }
 
+    /*
+        Tạo file nhận và resize đúng bằng kích thước file gốc.
+        Nhờ vậy server có thể ghi chunk vào đúng vị trí bằng offset.
+    */
     ensure_output_file_size(data_path, header.file_size);
 
     std::vector<unsigned char> bitmap = load_state(state_path, header.total_chunks);
@@ -249,16 +344,21 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
 
     std::vector<char> buffer(BUFFER_SIZE);
 
+    uint64_t received_progress = count_received_chunks(bitmap);
+    print_progress(filename, received_progress, header.total_chunks);
+
     while (!all_chunks_received(bitmap)) {
         ChunkHeader chunk_header{};
 
         if (!recv_all(client_socket, &chunk_header, sizeof(chunk_header))) {
+            std::cout << "\n";
             save_state(state_path, bitmap);
             outfile.close();
             return false;
         }
 
         if (chunk_header.chunk_index >= header.total_chunks) {
+            std::cout << "\n";
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
@@ -266,6 +366,7 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
         }
 
         if (chunk_header.data_size > BUFFER_SIZE) {
+            std::cout << "\n";
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
@@ -275,6 +376,7 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
         uint64_t expected_offset = chunk_header.chunk_index * header.chunk_size;
 
         if (chunk_header.offset != expected_offset) {
+            std::cout << "\n";
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
@@ -282,17 +384,24 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
         }
 
         if (!recv_all(client_socket, buffer.data(), chunk_header.data_size)) {
+            std::cout << "\n";
             save_state(state_path, bitmap);
             outfile.close();
             return false;
         }
 
-        std::string actual_chunk_hash =
+        /*
+            Check hash từng chunk nhưng không in ra màn hình.
+            Client gửi hash chunk trong ChunkHeader.
+            Server tính lại hash từ dữ liệu vừa nhận.
+        */
+        std::string client_chunk_hash(chunk_header.chunk_sha256);
+
+        std::string server_received_hash =
             sha256_buffer(buffer.data(), chunk_header.data_size);
 
-        std::string expected_chunk_hash(chunk_header.chunk_sha256);
-
-        if (actual_chunk_hash != expected_chunk_hash) {
+        if (server_received_hash != client_chunk_hash) {
+            std::cout << "\n";
             send_all(client_socket, "ER", 2);
             save_state(state_path, bitmap);
             outfile.close();
@@ -300,47 +409,92 @@ bool receiveFileRandomChunkShaResume(int client_socket) {
         }
 
         if (bitmap[chunk_header.chunk_index] == 0) {
+            /*
+                Xử lý out-of-order:
+
+                Chunk có thể đến không theo thứ tự.
+                Server không ghi nối tiếp cuối file.
+                Server ghi theo offset:
+
+                offset = chunk_index * chunk_size
+            */
             outfile.seekp(static_cast<std::streamoff>(chunk_header.offset), std::ios::beg);
             outfile.write(buffer.data(), chunk_header.data_size);
             outfile.flush();
 
+            /*
+                Sau khi ghi, server đọc lại vùng vừa ghi và tính SHA-256.
+                Nếu hash sau ghi giống hash client gửi,
+                chứng tỏ ghi đúng vị trí và đúng dữ liệu.
+                Phần này cũng không in ra màn hình.
+            */
+            std::string hash_after_write =
+                sha256_file_range(outfile, chunk_header.offset, chunk_header.data_size);
+
+            if (hash_after_write != client_chunk_hash) {
+                std::cout << "\n";
+                send_all(client_socket, "ER", 2);
+                save_state(state_path, bitmap);
+                outfile.close();
+                return false;
+            }
+
             bitmap[chunk_header.chunk_index] = 1;
             save_state(state_path, bitmap);
+
+            received_progress++;
+            print_progress(filename, received_progress, header.total_chunks);
         }
 
         send_all(client_socket, "OK", 2);
     }
 
+    std::cout << "\n";
+
     outfile.close();
 
+    /*
+        Sau khi nhận đủ toàn bộ chunk,
+        server tính SHA-256 của file đã ghép hoàn chỉnh.
+        Sau đó so sánh với SHA-256 file gốc client gửi trong FileHeader.
+    */
     std::string actual_file_hash = sha256_file(data_path);
 
+    std::cout << "\n[FINAL FILE HASH CHECK]\n";
+    std::cout << "  filename             : " << filename << "\n";
+    std::cout << "  client original hash : " << expected_file_hash << "\n";
+    std::cout << "  server merged hash   : " << actual_file_hash << "\n";
+
     if (actual_file_hash == expected_file_hash) {
-    send_all(client_socket, "OK", 2);
+        std::cout << "  result               : OK - merged file is correct\n";
 
-    if (fs::exists(state_path)) {
-        fs::remove(state_path);
+        send_all(client_socket, "OK", 2);
+
+        if (fs::exists(state_path)) {
+            fs::remove(state_path);
+        }
+
+        std::cout
+            << "[OK] Received successfully: "
+            << filename
+            << " ("
+            << header.file_size
+            << " bytes, "
+            << header.total_chunks
+            << " chunks)"
+            << std::endl;
+
+        return true;
     }
 
-    std::cout
-        << "[OK] Received successfully: "
-        << filename
-        << " ("
-        << header.file_size
-        << " bytes, "
-        << header.total_chunks
-        << " chunks)"
-        << std::endl;
-
-    return true;
-    }
+    std::cout << "  result               : ER - merged file hash mismatch\n";
 
     send_all(client_socket, "ER", 2);
 
     std::cout
-    << "[FAILED] SHA256 mismatch: "
-    << filename
-    << std::endl;
+        << "[FAILED] SHA256 mismatch: "
+        << filename
+        << std::endl;
 
     return false;
 }
